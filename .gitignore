@@ -1,0 +1,19 @@
+# Vivado generated artifacts
+.Xil/
+*.jou
+*.log
+*.str
+*.bit
+*.bin
+*.dcp
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+*.srcs/
+
+# OS/editor
+.DS_Store
+Thumbs.db
