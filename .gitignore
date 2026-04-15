@@ -13,6 +13,7 @@
 *.sim/
 *.gen/
 *.srcs/
+dfx_runtime.txt
 
 # OS/editor
 .DS_Store

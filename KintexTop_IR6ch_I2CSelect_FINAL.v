@@ -1,15 +1,50 @@
 //------------------------------------------------------------------------------
-// KintexTop_IR6ch_I2CSelect
-// - 6x IR camera inputs
-// - I2C selects which IR camera stream is forwarded to the debugger outputs (IEG0/IEG1)
-// - I2C slave exposes an 8-bit register-addressed memory device at 7-bit address 0x36
-// - Compatible with MCU HAL_I2C_Mem_Write / HAL_I2C_Mem_Read (8-bit register address)
-// - The current mode register (0x00) selects the IR debug source:
-//     0x0D..0x12 => IR0..IR5
-//     0x00..0x05 => legacy direct select IR0..IR5
-// - Uses IRCAM0_PCLK as the reference clock for the I2C slave
+// Combined EO + IR I2C-select top
+// - mode 0x07..0x0C => EO camera 0..5 routed to HD-SDI output
+// - mode 0x0D..0x12 => IR camera 0..5 routed to IEG0/IEG1 debug outputs
+// - legacy mode 0x00..0x05 => IR camera 0..5 (backward compatible)
+// - I2C slave exposes full 8-bit register-addressed map at 7-bit address 0x36
 //------------------------------------------------------------------------------
+`include "KintexTop_0cam_ch1_0108.v"
+`include "Kintex_top_1cam_ch1_1202.v"
+`include "Kintex_top_2cam_ch1_1202.v"
+`include "Kintex_top_3cam_ch1_1202.v"
+`include "Kintex_top_4cam_ch1_1202.v"
+`include "Kintex_top_5cam_ch1_1202.v"
+
 module KintexTop_IR6ch_I2CSelect(
+    // EO Camera 0..5
+    input  wire         CAM0_PCLK,
+    input  wire [7:0]   CAM0_YOUT,
+    input  wire [7:0]   CAM0_COUT,
+
+    input  wire         CAM1_PCLK,
+    input  wire [7:0]   CAM1_YOUT,
+    input  wire [7:0]   CAM1_COUT,
+    output wire         TRIG_IN1,
+
+    input  wire         CAM2_PCLK,
+    input  wire [7:0]   CAM2_YOUT,
+    input  wire [7:0]   CAM2_COUT,
+    output wire         TRIG_IN2,
+
+    input  wire         CAM3_PCLK,
+    input  wire [7:0]   CAM3_YOUT,
+    input  wire [7:0]   CAM3_COUT,
+    output wire         TRIG_IN3,
+
+    input  wire         CAM4_PCLK,
+    input  wire [7:0]   CAM4_YOUT,
+    input  wire [7:0]   CAM4_COUT,
+    output wire         TRIG_IN4,
+
+    input  wire         CAM5_PCLK,
+    input  wire [7:0]   CAM5_YOUT,
+    input  wire [7:0]   CAM5_COUT,
+    output wire         TRIG_IN5,
+
+    input  wire         STROBE_OUT0,
+
     // IR Camera 0..5
     input  wire         IRCAM0_PCLK,
     input  wire         IRCAM0_HSYNC,
@@ -47,11 +82,14 @@ module KintexTop_IR6ch_I2CSelect(
     input  wire [15:0]  IRCAM5_DOUT,
     output wire         IRCAM5_GENLOCK,
 
-    // EO CAM0 / Strobe (used as reference clock and optional debug bit)
-    input  wire         STROBE_OUT0,
-    input  wire         CAM0_PCLK,
+    // HD-SDI output for EO selection
+    output wire         HD_DE,
+    output wire         HD_VSYNC,
+    output wire         HD_HSYNC,
+    output wire         HD_PCLK,
+    output wire [19:0]  HD_DOUT,
 
-    // Debugger output port(s)
+    // Debugger outputs for IR selection
     output wire         IEG0_PCLK,
     output wire         IEG0_HSYNC,
     output wire         IEG0_VSYNC,
@@ -67,17 +105,14 @@ module KintexTop_IR6ch_I2CSelect(
     inout  wire         SDA
 );
 
-    //--------------------------------------------------------------------------
-    // Constant reset (matches your existing single-cam debug design style)
-    //--------------------------------------------------------------------------
     wire nRESET = 1'b1;
 
-    //--------------------------------------------------------------------------
-    // Clock buffers (match your existing use of IBUFG for camera PCLKs)
-    //--------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // Clock buffers
+    // ------------------------------------------------------------------------
     wire IRCAM0_PCLK_bufg, IRCAM1_PCLK_bufg, IRCAM2_PCLK_bufg;
     wire IRCAM3_PCLK_bufg, IRCAM4_PCLK_bufg, IRCAM5_PCLK_bufg;
-    wire CAM0_PCLK_bufg;
+    wire CAM0_PCLK_ibuf, CAM0_PCLK_bufg;
 
     IBUFG U_ircam0_pclk_ibuf (.I(IRCAM0_PCLK), .O(IRCAM0_PCLK_bufg));
     IBUFG U_ircam1_pclk_ibuf (.I(IRCAM1_PCLK), .O(IRCAM1_PCLK_bufg));
@@ -85,23 +120,12 @@ module KintexTop_IR6ch_I2CSelect(
     IBUFG U_ircam3_pclk_ibuf (.I(IRCAM3_PCLK), .O(IRCAM3_PCLK_bufg));
     IBUFG U_ircam4_pclk_ibuf (.I(IRCAM4_PCLK), .O(IRCAM4_PCLK_bufg));
     IBUFG U_ircam5_pclk_ibuf (.I(IRCAM5_PCLK), .O(IRCAM5_PCLK_bufg));
-    // CAM0_PCLK: use a single input buffer, then fan out (avoids illegal port->IBUFG+BUFG fanout)
-    wire CAM0_PCLK_ibuf;
-    IBUF  U_cam0_pclk_ibuf (.I(CAM0_PCLK), .O(CAM0_PCLK_ibuf));
-    BUFG  U_cam0_pclk_bufg (.I(CAM0_PCLK_ibuf), .O(CAM0_PCLK_bufg));
+    IBUF  U_cam0_pclk_ibuf  (.I(CAM0_PCLK),   .O(CAM0_PCLK_ibuf));
+    BUFG  U_cam0_pclk_bufg  (.I(CAM0_PCLK_ibuf), .O(CAM0_PCLK_bufg));
 
-    //--------------------------------------------------------------------------
-    // Register strobe in the CAM0 clock domain (optional debug bit)
-    //--------------------------------------------------------------------------
-    reg STROBE_OUT0_1d;
-    always @(posedge CAM0_PCLK_bufg or negedge nRESET) begin
-        if (!nRESET) STROBE_OUT0_1d <= 1'b0;
-        else         STROBE_OUT0_1d <= STROBE_OUT0;
-    end
-
-    //--------------------------------------------------------------------------
-    // Latch each IR camera bus in its own PCLK domain
-    //--------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // IR capture latches
+    // ------------------------------------------------------------------------
     reg [15:0] IRCAM0_DOUT_1d, IRCAM1_DOUT_1d, IRCAM2_DOUT_1d;
     reg [15:0] IRCAM3_DOUT_1d, IRCAM4_DOUT_1d, IRCAM5_DOUT_1d;
     reg        IRCAM0_HSYNC_1d, IRCAM0_VSYNC_1d;
@@ -113,57 +137,52 @@ module KintexTop_IR6ch_I2CSelect(
 
     always @(posedge IRCAM0_PCLK_bufg or negedge nRESET) begin
         if (!nRESET) begin
-            IRCAM0_DOUT_1d  <= 16'h0000; IRCAM0_HSYNC_1d <= 1'b0; IRCAM0_VSYNC_1d <= 1'b0;
+            IRCAM0_DOUT_1d <= 16'h0000; IRCAM0_HSYNC_1d <= 1'b0; IRCAM0_VSYNC_1d <= 1'b0;
         end else begin
-            IRCAM0_DOUT_1d  <= IRCAM0_DOUT;  IRCAM0_HSYNC_1d <= IRCAM0_HSYNC;  IRCAM0_VSYNC_1d <= IRCAM0_VSYNC;
+            IRCAM0_DOUT_1d <= IRCAM0_DOUT; IRCAM0_HSYNC_1d <= IRCAM0_HSYNC; IRCAM0_VSYNC_1d <= IRCAM0_VSYNC;
         end
     end
-
     always @(posedge IRCAM1_PCLK_bufg or negedge nRESET) begin
         if (!nRESET) begin
-            IRCAM1_DOUT_1d  <= 16'h0000; IRCAM1_HSYNC_1d <= 1'b0; IRCAM1_VSYNC_1d <= 1'b0;
+            IRCAM1_DOUT_1d <= 16'h0000; IRCAM1_HSYNC_1d <= 1'b0; IRCAM1_VSYNC_1d <= 1'b0;
         end else begin
-            IRCAM1_DOUT_1d  <= IRCAM1_DOUT;  IRCAM1_HSYNC_1d <= IRCAM1_HSYNC;  IRCAM1_VSYNC_1d <= IRCAM1_VSYNC;
+            IRCAM1_DOUT_1d <= IRCAM1_DOUT; IRCAM1_HSYNC_1d <= IRCAM1_HSYNC; IRCAM1_VSYNC_1d <= IRCAM1_VSYNC;
         end
     end
-
     always @(posedge IRCAM2_PCLK_bufg or negedge nRESET) begin
         if (!nRESET) begin
-            IRCAM2_DOUT_1d  <= 16'h0000; IRCAM2_HSYNC_1d <= 1'b0; IRCAM2_VSYNC_1d <= 1'b0;
+            IRCAM2_DOUT_1d <= 16'h0000; IRCAM2_HSYNC_1d <= 1'b0; IRCAM2_VSYNC_1d <= 1'b0;
         end else begin
-            IRCAM2_DOUT_1d  <= IRCAM2_DOUT;  IRCAM2_HSYNC_1d <= IRCAM2_HSYNC;  IRCAM2_VSYNC_1d <= IRCAM2_VSYNC;
+            IRCAM2_DOUT_1d <= IRCAM2_DOUT; IRCAM2_HSYNC_1d <= IRCAM2_HSYNC; IRCAM2_VSYNC_1d <= IRCAM2_VSYNC;
         end
     end
-
     always @(posedge IRCAM3_PCLK_bufg or negedge nRESET) begin
         if (!nRESET) begin
-            IRCAM3_DOUT_1d  <= 16'h0000; IRCAM3_HSYNC_1d <= 1'b0; IRCAM3_VSYNC_1d <= 1'b0;
+            IRCAM3_DOUT_1d <= 16'h0000; IRCAM3_HSYNC_1d <= 1'b0; IRCAM3_VSYNC_1d <= 1'b0;
         end else begin
-            IRCAM3_DOUT_1d  <= IRCAM3_DOUT;  IRCAM3_HSYNC_1d <= IRCAM3_HSYNC;  IRCAM3_VSYNC_1d <= IRCAM3_VSYNC;
+            IRCAM3_DOUT_1d <= IRCAM3_DOUT; IRCAM3_HSYNC_1d <= IRCAM3_HSYNC; IRCAM3_VSYNC_1d <= IRCAM3_VSYNC;
         end
     end
-
     always @(posedge IRCAM4_PCLK_bufg or negedge nRESET) begin
         if (!nRESET) begin
-            IRCAM4_DOUT_1d  <= 16'h0000; IRCAM4_HSYNC_1d <= 1'b0; IRCAM4_VSYNC_1d <= 1'b0;
+            IRCAM4_DOUT_1d <= 16'h0000; IRCAM4_HSYNC_1d <= 1'b0; IRCAM4_VSYNC_1d <= 1'b0;
         end else begin
-            IRCAM4_DOUT_1d  <= IRCAM4_DOUT;  IRCAM4_HSYNC_1d <= IRCAM4_HSYNC;  IRCAM4_VSYNC_1d <= IRCAM4_VSYNC;
+            IRCAM4_DOUT_1d <= IRCAM4_DOUT; IRCAM4_HSYNC_1d <= IRCAM4_HSYNC; IRCAM4_VSYNC_1d <= IRCAM4_VSYNC;
         end
     end
-
     always @(posedge IRCAM5_PCLK_bufg or negedge nRESET) begin
         if (!nRESET) begin
-            IRCAM5_DOUT_1d  <= 16'h0000; IRCAM5_HSYNC_1d <= 1'b0; IRCAM5_VSYNC_1d <= 1'b0;
+            IRCAM5_DOUT_1d <= 16'h0000; IRCAM5_HSYNC_1d <= 1'b0; IRCAM5_VSYNC_1d <= 1'b0;
         end else begin
-            IRCAM5_DOUT_1d  <= IRCAM5_DOUT;  IRCAM5_HSYNC_1d <= IRCAM5_HSYNC;  IRCAM5_VSYNC_1d <= IRCAM5_VSYNC;
+            IRCAM5_DOUT_1d <= IRCAM5_DOUT; IRCAM5_HSYNC_1d <= IRCAM5_HSYNC; IRCAM5_VSYNC_1d <= IRCAM5_VSYNC;
         end
     end
 
-    //--------------------------------------------------------------------------
-    // I2C slave
-    // - Uses IRCAM0_PCLK as the internal reference clock
-    //--------------------------------------------------------------------------
-    wire [3:0] cam_select;
+    // ------------------------------------------------------------------------
+    // I2C slave / mode decode
+    // ------------------------------------------------------------------------
+    wire [3:0] cam_select_unused;
+    wire [7:0] mode_current;
 
     Kintex_top_I2C_test #(
         .SLAVE_ADDR(7'h36),
@@ -171,70 +190,223 @@ module KintexTop_IR6ch_I2CSelect(
         .POR_MS(100)
     ) u_i2c (
         .FPGA_RESET(1'b1),
-        .SCLK_IN   (IRCAM0_PCLK_bufg),
+        .SCLK_IN   (CAM0_PCLK_ibuf),
         .SCL       (SCL),
         .SDA       (SDA),
-        .cam_select(cam_select)
+        .cam_select(cam_select_unused),
+        .mode_out  (mode_current)
     );
 
-    // Clamp select to 0..5
-    wire [2:0] sel = (cam_select[2:0] > 3'd5) ? 3'd0 : cam_select[2:0];
+    wire eo_mode_active = (mode_current >= 8'h07) && (mode_current <= 8'h0C);
+    wire ir_mode_active = (mode_current <= 8'd5) || ((mode_current >= 8'h0D) && (mode_current <= 8'h12));
 
-    //--------------------------------------------------------------------------
-    // Mux selected IR camera stream to debugger outputs
-    //--------------------------------------------------------------------------
-    wire        SEL_PCLK  =
-        (sel == 3'd0) ? IRCAM0_PCLK_bufg :
-        (sel == 3'd1) ? IRCAM1_PCLK_bufg :
-        (sel == 3'd2) ? IRCAM2_PCLK_bufg :
-        (sel == 3'd3) ? IRCAM3_PCLK_bufg :
-        (sel == 3'd4) ? IRCAM4_PCLK_bufg :
-                        IRCAM5_PCLK_bufg;
+    wire [2:0] eo_sel = eo_mode_active ? (mode_current - 8'h07) : 3'd0;
+    wire [2:0] ir_sel = (mode_current <= 8'd5) ? mode_current[2:0] :
+                        (((mode_current >= 8'h0D) && (mode_current <= 8'h12)) ? (mode_current - 8'h0D) : 3'd0);
 
-    wire        SEL_HSYNC =
-        (sel == 3'd0) ? IRCAM0_HSYNC_1d :
-        (sel == 3'd1) ? IRCAM1_HSYNC_1d :
-        (sel == 3'd2) ? IRCAM2_HSYNC_1d :
-        (sel == 3'd3) ? IRCAM3_HSYNC_1d :
-        (sel == 3'd4) ? IRCAM4_HSYNC_1d :
-                        IRCAM5_HSYNC_1d;
+    // ------------------------------------------------------------------------
+    // EO camera processing blocks (reused from previous working EO design)
+    // ------------------------------------------------------------------------
+    wire        eo0_pclk, eo0_hsync, eo0_vsync;
+    wire [19:2] eo0_dout_19_2;
+    wire [19:0] eo0_dout = {eo0_dout_19_2, 2'b00};
+    wire        eo0_dbg_pclk, eo0_dbg_hsync, eo0_dbg_vsync;
+    wire [19:0] eo0_dbg_dout;
 
-    wire        SEL_VSYNC =
-        (sel == 3'd0) ? IRCAM0_VSYNC_1d :
-        (sel == 3'd1) ? IRCAM1_VSYNC_1d :
-        (sel == 3'd2) ? IRCAM2_VSYNC_1d :
-        (sel == 3'd3) ? IRCAM3_VSYNC_1d :
-        (sel == 3'd4) ? IRCAM4_VSYNC_1d :
-                        IRCAM5_VSYNC_1d;
+    wire        eo1_pclk, eo1_hsync, eo1_vsync;
+    wire [19:0] eo1_dout, eo1_dbg_dout;
+    wire        eo1_dbg_pclk, eo1_dbg_hsync, eo1_dbg_vsync;
 
-    wire [15:0] SEL_DOUT  =
-        (sel == 3'd0) ? IRCAM0_DOUT_1d :
-        (sel == 3'd1) ? IRCAM1_DOUT_1d :
-        (sel == 3'd2) ? IRCAM2_DOUT_1d :
-        (sel == 3'd3) ? IRCAM3_DOUT_1d :
-        (sel == 3'd4) ? IRCAM4_DOUT_1d :
-                        IRCAM5_DOUT_1d;
+    wire        eo2_pclk, eo2_hsync, eo2_vsync;
+    wire [19:0] eo2_dout, eo2_dbg_dout;
+    wire        eo2_dbg_pclk, eo2_dbg_hsync, eo2_dbg_vsync;
 
-    // Drive both debug ports identically
-    assign IEG0_PCLK  = SEL_PCLK;
-    assign IEG0_HSYNC = SEL_HSYNC;
-    assign IEG0_VSYNC = SEL_VSYNC;
-    assign IEG0_DOUT  = {12'b0, SEL_DOUT[13:6]};
+    wire        eo3_pclk, eo3_hsync, eo3_vsync;
+    wire [19:0] eo3_dout, eo3_dbg_dout;
+    wire        eo3_dbg_pclk, eo3_dbg_hsync, eo3_dbg_vsync;
 
-    assign IEG1_PCLK  = SEL_PCLK;
-    assign IEG1_HSYNC = SEL_HSYNC;
-    assign IEG1_VSYNC = SEL_VSYNC;
-    assign IEG1_DOUT  = {12'b0, SEL_DOUT[13:6]};
+    wire        eo4_pclk, eo4_hsync, eo4_vsync;
+    wire [19:0] eo4_dout, eo4_dbg_dout;
+    wire        eo4_dbg_pclk, eo4_dbg_hsync, eo4_dbg_vsync;
 
-    //--------------------------------------------------------------------------
-    // Genlock generation (copied from your single-cam debug design)
-    //--------------------------------------------------------------------------
+    wire        eo5_pclk, eo5_hsync, eo5_vsync;
+    wire [19:0] eo5_dout, eo5_dbg_dout;
+    wire        eo5_dbg_pclk, eo5_dbg_hsync, eo5_dbg_vsync;
+
+    Kintex_top_0cam_1ch u_eo0 (
+        .FPGA_RESET (nRESET),
+        .CAM0_PCLK  (CAM0_PCLK_ibuf),
+        .CAM0_YOUT  (CAM0_YOUT),
+        .CAM0_COUT  (CAM0_COUT),
+        .IEG0_PCLK  (eo0_pclk),
+        .IEG0_HSYNC (eo0_hsync),
+        .IEG0_VSYNC (eo0_vsync),
+        .IEG0_DOUT  (eo0_dout_19_2),
+        .IEG1_PCLK  (eo0_dbg_pclk),
+        .IEG1_HSYNC (eo0_dbg_hsync),
+        .IEG1_VSYNC (eo0_dbg_vsync),
+        .IEG1_DOUT  (eo0_dbg_dout)
+    );
+
+    Kintex_top_1cam_1ch u_eo1 (
+        .FPGA_RESET (nRESET),
+        .CAM1_PCLK  (CAM1_PCLK),
+        .CAM1_YOUT  (CAM1_YOUT),
+        .CAM1_COUT  (CAM1_COUT),
+        .STROBE_OUT0(STROBE_OUT0),
+        .TRIG_IN1   (TRIG_IN1),
+        .IEG0_PCLK  (eo1_pclk),
+        .IEG0_HSYNC (eo1_hsync),
+        .IEG0_VSYNC (eo1_vsync),
+        .IEG0_DOUT  (eo1_dout),
+        .IEG1_PCLK  (eo1_dbg_pclk),
+        .IEG1_HSYNC (eo1_dbg_hsync),
+        .IEG1_VSYNC (eo1_dbg_vsync),
+        .IEG1_DOUT  (eo1_dbg_dout)
+    );
+
+    Kintex_top_2cam_1ch u_eo2 (
+        .FPGA_RESET (nRESET),
+        .CAM2_PCLK  (CAM2_PCLK),
+        .CAM2_YOUT  (CAM2_YOUT),
+        .CAM2_COUT  (CAM2_COUT),
+        .STROBE_OUT0(STROBE_OUT0),
+        .TRIG_IN2   (TRIG_IN2),
+        .IEG0_PCLK  (eo2_pclk),
+        .IEG0_HSYNC (eo2_hsync),
+        .IEG0_VSYNC (eo2_vsync),
+        .IEG0_DOUT  (eo2_dout),
+        .IEG1_PCLK  (eo2_dbg_pclk),
+        .IEG1_HSYNC (eo2_dbg_hsync),
+        .IEG1_VSYNC (eo2_dbg_vsync),
+        .IEG1_DOUT  (eo2_dbg_dout)
+    );
+
+    Kintex_top_3cam_1ch u_eo3 (
+        .FPGA_RESET (nRESET),
+        .CAM3_PCLK  (CAM3_PCLK),
+        .CAM3_YOUT  (CAM3_YOUT),
+        .CAM3_COUT  (CAM3_COUT),
+        .STROBE_OUT0(STROBE_OUT0),
+        .TRIG_IN3   (TRIG_IN3),
+        .IEG0_PCLK  (eo3_pclk),
+        .IEG0_HSYNC (eo3_hsync),
+        .IEG0_VSYNC (eo3_vsync),
+        .IEG0_DOUT  (eo3_dout),
+        .IEG1_PCLK  (eo3_dbg_pclk),
+        .IEG1_HSYNC (eo3_dbg_hsync),
+        .IEG1_VSYNC (eo3_dbg_vsync),
+        .IEG1_DOUT  (eo3_dbg_dout)
+    );
+
+    Kintex_top_4cam_1ch u_eo4 (
+        .FPGA_RESET (nRESET),
+        .CAM4_PCLK  (CAM4_PCLK),
+        .CAM4_YOUT  (CAM4_YOUT),
+        .CAM4_COUT  (CAM4_COUT),
+        .STROBE_OUT0(STROBE_OUT0),
+        .TRIG_IN4   (TRIG_IN4),
+        .IEG0_PCLK  (eo4_pclk),
+        .IEG0_HSYNC (eo4_hsync),
+        .IEG0_VSYNC (eo4_vsync),
+        .IEG0_DOUT  (eo4_dout),
+        .IEG1_PCLK  (eo4_dbg_pclk),
+        .IEG1_HSYNC (eo4_dbg_hsync),
+        .IEG1_VSYNC (eo4_dbg_vsync),
+        .IEG1_DOUT  (eo4_dbg_dout)
+    );
+
+    Kintex_top_5cam_1ch u_eo5 (
+        .FPGA_RESET (nRESET),
+        .CAM5_PCLK  (CAM5_PCLK),
+        .CAM5_YOUT  (CAM5_YOUT),
+        .CAM5_COUT  (CAM5_COUT),
+        .STROBE_OUT0(STROBE_OUT0),
+        .TRIG_IN5   (TRIG_IN5),
+        .IEG0_PCLK  (eo5_pclk),
+        .IEG0_HSYNC (eo5_hsync),
+        .IEG0_VSYNC (eo5_vsync),
+        .IEG0_DOUT  (eo5_dout),
+        .IEG1_PCLK  (eo5_dbg_pclk),
+        .IEG1_HSYNC (eo5_dbg_hsync),
+        .IEG1_VSYNC (eo5_dbg_vsync),
+        .IEG1_DOUT  (eo5_dbg_dout)
+    );
+
+    wire eo_sel_pclk_mux = (eo_sel == 3'd0) ? eo0_pclk :
+                           (eo_sel == 3'd1) ? eo1_pclk :
+                           (eo_sel == 3'd2) ? eo2_pclk :
+                           (eo_sel == 3'd3) ? eo3_pclk :
+                           (eo_sel == 3'd4) ? eo4_pclk :
+                                              eo5_pclk;
+    wire EO_SEL_PCLK_BUFG;
+    BUFG u_eo_sel_pclk_bufg (.I(eo_sel_pclk_mux), .O(EO_SEL_PCLK_BUFG));
+
+    wire        EO_SEL_HSYNC = (eo_sel == 3'd0) ? eo0_hsync :
+                               (eo_sel == 3'd1) ? eo1_hsync :
+                               (eo_sel == 3'd2) ? eo2_hsync :
+                               (eo_sel == 3'd3) ? eo3_hsync :
+                               (eo_sel == 3'd4) ? eo4_hsync : eo5_hsync;
+    wire        EO_SEL_VSYNC = (eo_sel == 3'd0) ? eo0_vsync :
+                               (eo_sel == 3'd1) ? eo1_vsync :
+                               (eo_sel == 3'd2) ? eo2_vsync :
+                               (eo_sel == 3'd3) ? eo3_vsync :
+                               (eo_sel == 3'd4) ? eo4_vsync : eo5_vsync;
+    wire [19:0] EO_SEL_DOUT  = (eo_sel == 3'd0) ? eo0_dout :
+                               (eo_sel == 3'd1) ? eo1_dout :
+                               (eo_sel == 3'd2) ? eo2_dout :
+                               (eo_sel == 3'd3) ? eo3_dout :
+                               (eo_sel == 3'd4) ? eo4_dout : eo5_dout;
+
+    assign HD_PCLK  = eo_mode_active ? EO_SEL_PCLK_BUFG : 1'b0;
+    assign HD_DE    = eo_mode_active ? 1'b1 : 1'b0;
+    assign HD_HSYNC = eo_mode_active ? 1'b1 : 1'b0;
+    assign HD_VSYNC = eo_mode_active ? 1'b1 : 1'b0;
+    assign HD_DOUT  = eo_mode_active ? EO_SEL_DOUT : 20'h0;
+
+    // ------------------------------------------------------------------------
+    // IR routing to debugger outputs
+    // ------------------------------------------------------------------------
+    wire        IR_SEL_PCLK  = (ir_sel == 3'd0) ? IRCAM0_PCLK_bufg :
+                               (ir_sel == 3'd1) ? IRCAM1_PCLK_bufg :
+                               (ir_sel == 3'd2) ? IRCAM2_PCLK_bufg :
+                               (ir_sel == 3'd3) ? IRCAM3_PCLK_bufg :
+                               (ir_sel == 3'd4) ? IRCAM4_PCLK_bufg : IRCAM5_PCLK_bufg;
+    wire        IR_SEL_HSYNC = (ir_sel == 3'd0) ? IRCAM0_HSYNC_1d :
+                               (ir_sel == 3'd1) ? IRCAM1_HSYNC_1d :
+                               (ir_sel == 3'd2) ? IRCAM2_HSYNC_1d :
+                               (ir_sel == 3'd3) ? IRCAM3_HSYNC_1d :
+                               (ir_sel == 3'd4) ? IRCAM4_HSYNC_1d : IRCAM5_HSYNC_1d;
+    wire        IR_SEL_VSYNC = (ir_sel == 3'd0) ? IRCAM0_VSYNC_1d :
+                               (ir_sel == 3'd1) ? IRCAM1_VSYNC_1d :
+                               (ir_sel == 3'd2) ? IRCAM2_VSYNC_1d :
+                               (ir_sel == 3'd3) ? IRCAM3_VSYNC_1d :
+                               (ir_sel == 3'd4) ? IRCAM4_VSYNC_1d : IRCAM5_VSYNC_1d;
+    wire [19:0] IR_SEL_DOUT  = (ir_sel == 3'd0) ? {12'b0, IRCAM0_DOUT_1d[13:6]} :
+                               (ir_sel == 3'd1) ? {12'b0, IRCAM1_DOUT_1d[13:6]} :
+                               (ir_sel == 3'd2) ? {12'b0, IRCAM2_DOUT_1d[13:6]} :
+                               (ir_sel == 3'd3) ? {12'b0, IRCAM3_DOUT_1d[13:6]} :
+                               (ir_sel == 3'd4) ? {12'b0, IRCAM4_DOUT_1d[13:6]} :
+                                                  {12'b0, IRCAM5_DOUT_1d[13:6]};
+
+    assign IEG0_PCLK  = ir_mode_active ? IR_SEL_PCLK  : 1'b0;
+    assign IEG0_HSYNC = ir_mode_active ? IR_SEL_HSYNC : 1'b0;
+    assign IEG0_VSYNC = ir_mode_active ? IR_SEL_VSYNC : 1'b0;
+    assign IEG0_DOUT  = ir_mode_active ? IR_SEL_DOUT  : 20'h0;
+
+    assign IEG1_PCLK  = ir_mode_active ? IR_SEL_PCLK  : 1'b0;
+    assign IEG1_HSYNC = ir_mode_active ? IR_SEL_HSYNC : 1'b0;
+    assign IEG1_VSYNC = ir_mode_active ? IR_SEL_VSYNC : 1'b0;
+    assign IEG1_DOUT  = ir_mode_active ? IR_SEL_DOUT  : 20'h0;
+
+    // ------------------------------------------------------------------------
+    // IR genlock generation
+    // ------------------------------------------------------------------------
     reg sig_60hz;
     localparam integer CLK_HZ        = 74_250_000;
     localparam integer FRAME_HZ_X10  = 600;
     localparam integer PERIOD_CYCLES = (CLK_HZ * 10) / FRAME_HZ_X10;
-    localparam integer HIGH_CYCLES   = (PERIOD_CYCLES * 1) / 100; // 1% duty
-
+    localparam integer HIGH_CYCLES   = (PERIOD_CYCLES * 1) / 100;
     localparam integer CW = 22;
     reg [CW-1:0] cnt;
 
@@ -260,22 +432,6 @@ module KintexTop_IR6ch_I2CSelect(
     assign IRCAM5_GENLOCK = sig_60hz;
 
 endmodule
-
-//------------------------------------------------------------------------------
-// Included I2C slave adapted for the current MCU register map
-//------------------------------------------------------------------------------
-
-// I2C Slave with 128 x 8-bit registers
-// Device address: 0x36 (7-bit)
-// Register address: 0x00 ~ 0x7F
-//
-// Notes:
-// - No external reset pin used. Internal POR reset generated from SCLK for POR_MS.
-// - SDA is true open-drain: drive LOW only, otherwise Z (external pull-up required).
-// - SDA changes only while SCL low (I2C spec), stable while SCL high.
-// - START/STOP detection is qualified to avoid false STOP during SCL transitions.
-// - dbg_last_wr_* mirrors added to confirm actual register write in ILA.
-
 module Kintex_top_I2C_test #(
     parameter [6:0] SLAVE_ADDR = 7'h36,
 
@@ -289,7 +445,8 @@ module Kintex_top_I2C_test #(
     input  wire SCLK_IN,
     input  wire SCL,
     inout  wire SDA,
-	output wire [3:0] cam_select
+	output wire [3:0] cam_select,
+    output wire [7:0] mode_out
 );
 
     //===========================================================
@@ -381,11 +538,33 @@ module Kintex_top_I2C_test #(
 
     //===========================================================
     // Register file (128 x 8-bit)
+    // Force flip-flop/register implementation instead of inferred RAM.
+    // The old known-good design used a small discrete register bank; once
+    // expanded to 128 bytes we must prevent BRAM/LUTRAM inference so random
+    // 8-bit address accesses continue to behave as a simple byte register file.
     //===========================================================
-    reg [7:0] regfile [0:REG_COUNT-1];
+    (* ram_style = "registers" *) reg [7:0] regfile [0:REG_COUNT-1];
     reg [7:0] reg_index;
 
     wire [7:0] mode_reg = regfile[8'h00];
+    assign mode_out = mode_reg;
+    wire [31:0] eo_cyl_h_fov_q16 = {regfile[8'h23], regfile[8'h22], regfile[8'h21], regfile[8'h20]};
+    wire [31:0] eo_cyl_v_fov_q16 = {regfile[8'h27], regfile[8'h26], regfile[8'h25], regfile[8'h24]};
+    wire [31:0] eo_crop_h_q16    = {regfile[8'h2B], regfile[8'h2A], regfile[8'h29], regfile[8'h28]};
+    wire [31:0] eo_crop_w_q16    = {regfile[8'h2F], regfile[8'h2E], regfile[8'h2D], regfile[8'h2C]};
+    wire [31:0] eo_pitch_tr_q16  = {regfile[8'h33], regfile[8'h32], regfile[8'h31], regfile[8'h30]};
+    wire [31:0] eo_yaw_tr_q16    = {regfile[8'h37], regfile[8'h36], regfile[8'h35], regfile[8'h34]};
+    wire [31:0] eo_overlap_i32   = {regfile[8'h3B], regfile[8'h3A], regfile[8'h39], regfile[8'h38]};
+    wire [31:0] eo_feather_q16   = {regfile[8'h3F], regfile[8'h3E], regfile[8'h3D], regfile[8'h3C]};
+
+    wire [31:0] ir_cyl_h_fov_q16 = {regfile[8'h53], regfile[8'h52], regfile[8'h51], regfile[8'h50]};
+    wire [31:0] ir_cyl_v_fov_q16 = {regfile[8'h57], regfile[8'h56], regfile[8'h55], regfile[8'h54]};
+    wire [31:0] ir_crop_h_q16    = {regfile[8'h5B], regfile[8'h5A], regfile[8'h59], regfile[8'h58]};
+    wire [31:0] ir_crop_w_q16    = {regfile[8'h5F], regfile[8'h5E], regfile[8'h5D], regfile[8'h5C]};
+    wire [31:0] ir_pitch_tr_q16  = {regfile[8'h63], regfile[8'h62], regfile[8'h61], regfile[8'h60]};
+    wire [31:0] ir_yaw_tr_q16    = {regfile[8'h67], regfile[8'h66], regfile[8'h65], regfile[8'h64]};
+    wire [31:0] ir_overlap_i32   = {regfile[8'h6B], regfile[8'h6A], regfile[8'h69], regfile[8'h68]};
+    wire [31:0] ir_feather_q16   = {regfile[8'h6F], regfile[8'h6E], regfile[8'h6D], regfile[8'h6C]};
     assign cam_select =
         (mode_reg <= 8'd5)                      ? mode_reg[3:0] :
         ((mode_reg >= 8'h0D) && (mode_reg <= 8'h12)) ? (mode_reg - 8'h0D) :
